@@ -1,36 +1,34 @@
 #!/bin/bash
-
-# Function to display messages with formatting
-print_message() {
-    echo "**********************"
-    echo "$1"
-    echo "**********************"
-}
-
-# Function to configure the network
-configure_network() {
-    echo "Configuring the network..."
-    cat <<EOF | sudo tee /etc/netplan/50-cloud-init.yaml > /dev/null
+# Function to update network configuration
+update_network_config() {
+    local netplan_file="/etc/netplan/50-cloud-init.yaml"
+    local new_config=$(cat <<EOF
 network:
   version: 2
   renderer: networkd
   ethernets:
     eth1:
-      dhcp4: no
-      addresses: [192.168.16.22/24]
-      routes:
-        - to: 0.0.0.0/0
-          via: 192.168.16.1
+      addresses:
+        - 192.168.16.21/24
+      gateway4: 192.168.16.2
       nameservers:
-        addresses: [192.168.16.1]
-        search: [home.arpa, localdomain]
+        addresses: [8.8.8.8, 8.8.4.4]
 EOF
+)
 
-    sudo netplan apply
+    log "Updating network configuration..."
+    # Check if configuration already exists
+    if ! grep -q "192.168.16.21" "$netplan_file"; then
+        echo "$new_config" | sudo tee -a "$netplan_file" >/dev/null
+        sudo netplan apply
+        log "Network configuration updated."
+    else
+        log "Network configuration already up to date."
+    fi
 }
 
-# Call the function to configure the network
-configure_network
+# Call the function to update network configuration
+update_network_config
 
 # Function to update the /etc/hosts file
 update_hosts() {
@@ -47,26 +45,29 @@ sudo grep -v '^192\.168\.16\.21[[:space:]]\+server1$' /etc/hosts | sudo tee /etc
 # Update /etc/hosts file
 update_hosts
 
-# Function to display messages with formatting
-print_message() {
-    echo "**********************"
-    echo "$1"
-    echo "**********************"
+# Function to install required software
+install_software() {
+    if ! package_installed "apache2"; then
+        log "Installing Apache2 web server..."
+        sudo apt update
+        sudo apt install -y apache2
+        log "Apache2 web server installed."
+    else
+        log "Apache2 web server is already installed."
+    fi
+
+    if ! package_installed "squid"; then
+        log "Installing Squid web proxy..."
+        sudo apt update
+        sudo apt install -y squid
+        log "Squid web proxy installed."
+    else
+        log "Squid web proxy is already installed."
+    fi
 }
 
-# Function to install Apache2
-install_apache() {
-    print_message "Installing Apache2"
-    sudo apt update
-    sudo apt install -y apache2
-}
-
-# Function to install Squid
-install_squid() {
-    print_message "Installing Squid"
-    sudo apt update
-    sudo apt install -y squid
-}
+# Call the function to install required software
+install_software
 
 # Function to start and enable Apache2 service
 start_apache() {
@@ -82,15 +83,8 @@ start_squid() {
     sudo systemctl enable squid
 }
 
-
-# Install Apache2
-install_apache
-
 # Start and enable Apache2 service
 start_apache
-
-# Install Squid
-install_squid
 
 # Start and enable Squid service
 start_squid
@@ -119,47 +113,41 @@ configure_firewall() {
 # Configure firewall rules using UFW
 configure_firewall
 
-# Function to display messages with formatting
-print_message() {
-    echo "**********************"
-    echo "$1"
-    echo "**********************"
-}
-
-# Function to create user accounts with specified configuration
+# Function to create user accounts with SSH keys and sudo access
 create_users() {
-    print_message "Creating User Accounts"
-
-    # List of users to create
     local users=("dennis" "aubrey" "captain" "snibbles" "brownie" "scooter" "sandy" "perrier" "cindy" "tiger" "yoda")
 
-    # Create users with home directory and bash shell
+    log "Creating user accounts..."
+
     for user in "${users[@]}"; do
-        sudo useradd -m -s /bin/bash "$user"
-        echo "User '$user' created."
+        if ! id "$user" &>/dev/null; then
+            log "Creating user: $user"
 
-        # Generate RSA and Ed25519 keys for the user
-        sudo -u "$user" ssh-keygen -t rsa -N "" -f "/home/$user/.ssh/id_rsa"
-        sudo -u "$user" ssh-keygen -t ed25519 -N "" -f "/home/$user/.ssh/id_ed25519"
+            sudo useradd -m -s /bin/bash "$user" # Add a user with a specified username and default shell
+            sudo mkdir -p "/home/$user/.ssh"
+            sudo touch "/home/$user/.ssh/authorized_keys"
+            sudo chown -R "$user:$user" "/home/$user/.ssh"
 
-        # Append RSA and Ed25519 public keys to authorized_keys file
-        cat "/home/$user/.ssh/id_rsa.pub" | sudo -u "$user" tee -a "/home/$user/.ssh/authorized_keys" >/dev/null
-        cat "/home/$user/.ssh/id_ed25519.pub" | sudo -u "$user" tee -a "/home/$user/.ssh/authorized_keys" >/dev/null
-
-        echo "SSH keys generated and added for user '$user'."
+            # Add SSH public keys for users based on their usernames
+            case "$user" in
+                "dennis")
+                    echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm" | sudo tee -a "/home/$user/.ssh/authorized_keys" >/dev/null
+                    ;;
+                *)
+                    # For other users, add their public keys here (This part is left as a placeholder)
+                    echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCezTPysKYTPTnrdXzlSmlbPtjQDebgWwHmE1QfM7LIuCNuKQZprVkbe+wfX4J+Rgp5vN0KHaxW8w/aRgB4yl7B8kTvW84OKcS1EACoKGl9Jrwb" | sudo tee -a "/home/$user/.ssh/authorized_keys" >/dev/null
+                    ;;
+            esac
+            log "SSH keys added for user: $user"
+        else
+            log "User '$user' already exists. Skipping creation."
+        fi
     done
-}
 
-# Function to grant sudo access to dennis
-grant_sudo_access() {
-    print_message "Granting Sudo Access to Dennis"
+    # Grant sudo access to the 'dennis' user
     sudo usermod -aG sudo dennis
-    echo "Sudo access granted to user 'dennis'."
+    log "Sudo access granted to user 'dennis'."
 }
 
-
-# Create user accounts
+# Call the function to create user accounts with SSH keys and sudo access
 create_users
-
-# Grant sudo access to dennis
-grant_sudo_access
